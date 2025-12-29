@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rotating Octahedron with Physics Balls</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        let scene, camera, renderer, octahedron;
+        let balls = [];
+        const gravity = 0.0005;
+        const damping = 0.98;
+        const ballRadius = 0.15;
+
+        // Octahedron vertices (normalized to unit size)
+        const octaVertices = [
+            [0, 1.5, 0],   // top
+            [0, -1.5, 0],  // bottom
+            [1.5, 0, 0],   // right
+            [-1.5, 0, 0],  // left
+            [0, 0, 1.5],   // front
+            [0, 0, -1.5]   // back
+        ];
+
+        // Octahedron faces (as triangles)
+        const octaFaces = [
+            [0, 2, 4], [0, 4, 3], [0, 3, 5], [0, 5, 2],
+            [1, 4, 2], [1, 3, 4], [1, 5, 3], [1, 2, 5]
+        ];
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Create octahedron
+            const geometry = new THREE.OctahedronGeometry(1.5);
+            const material = new THREE.MeshPhongMaterial({
+                color: 0x4a90e2,
+                transparent: true,
+                opacity: 0.3,
+                side: THREE.DoubleSide,
+                wireframe: false
+            });
+            octahedron = new THREE.Mesh(geometry, material);
+            scene.add(octahedron);
+
+            // Add wireframe
+            const wireframe = new THREE.LineSegments(
+                new THREE.EdgesGeometry(geometry),
+                new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 })
+            );
+            octahedron.add(wireframe);
+
+            // Create balls
+            const ballColors = [0xff6b6b, 0x4ecdc4, 0xffe66d];
+            for (let i = 0; i < 3; i++) {
+                const ballGeo = new THREE.SphereGeometry(ballRadius, 32, 32);
+                const ballMat = new THREE.MeshPhongMaterial({ color: ballColors[i] });
+                const ball = new THREE.Mesh(ballGeo, ballMat);
+                
+                ball.userData = {
+                    velocity: new THREE.Vector3(
+                        (Math.random() - 0.5) * 0.02,
+                        (Math.random() - 0.5) * 0.02,
+                        (Math.random() - 0.5) * 0.02
+                    )
+                };
+                
+                scene.add(ball);
+                balls.push(ball);
+            }
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const pointLight = new THREE.PointLight(0xffffff, 0.8);
+            pointLight.position.set(5, 5, 5);
+            scene.add(pointLight);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function pointInOctahedron(point, octaRotation) {
+            // Transform point to octahedron's local space
+            const localPoint = point.clone();
+            localPoint.applyQuaternion(octaRotation.clone().invert());
+            
+            // Check if point is inside octahedron
+            // Octahedron constraint: |x| + |y| + |z| <= constant
+            const sum = Math.abs(localPoint.x) + Math.abs(localPoint.y) + Math.abs(localPoint.z);
+            return sum <= 1.5;
+        }
+
+        function getClosestPointOnOctahedron(point, octaRotation) {
+            const localPoint = point.clone();
+            localPoint.applyQuaternion(octaRotation.clone().invert());
+            
+            // Find closest face
+            let minDist = Infinity;
+            let closestPoint = localPoint.clone();
+            
+            octaFaces.forEach(face => {
+                const v0 = new THREE.Vector3(...octaVertices[face[0]]);
+                const v1 = new THREE.Vector3(...octaVertices[face[1]]);
+                const v2 = new THREE.Vector3(...octaVertices[face[2]]);
+                
+                // Calculate plane normal
+                const edge1 = v1.clone().sub(v0);
+                const edge2 = v2.clone().sub(v0);
+                const normal = edge1.cross(edge2).normalize();
+                
+                // Distance to plane
+                const d = -normal.dot(v0);
+                const dist = Math.abs(normal.dot(localPoint) + d);
+                
+                if (dist < minDist) {
+                    minDist = dist;
+                    // Project point onto plane
+                    const projected = localPoint.clone().sub(normal.clone().multiplyScalar(normal.dot(localPoint) + d));
+                    closestPoint = projected;
+                }
+            });
+            
+            // Transform back to world space
+            closestPoint.applyQuaternion(octaRotation);
+            return closestPoint;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Rotate octahedron
+            octahedron.rotation.x += 0.005;
+            octahedron.rotation.y += 0.01;
+
+            // Update balls
+            balls.forEach(ball => {
+                const vel = ball.userData.velocity;
+                
+                // Apply gravity (downward)
+                vel.y -= gravity;
+                
+                // Update position
+                ball.position.add(vel);
+                
+                // Check collision with octahedron boundaries
+                if (!pointInOctahedron(ball.position, octahedron.quaternion)) {
+                    const closest = getClosestPointOnOctahedron(ball.position, octahedron.quaternion);
+                    const normal = ball.position.clone().sub(closest).normalize();
+                    
+                    // Move ball back inside
+                    ball.position.copy(closest).add(normal.multiplyScalar(ballRadius));
+                    
+                    // Reflect velocity
+                    const dot = vel.dot(normal);
+                    vel.sub(normal.multiplyScalar(2 * dot));
+                    vel.multiplyScalar(damping);
+                }
+                
+                // Ball-to-ball collisions
+                balls.forEach(other => {
+                    if (ball !== other) {
+                        const diff = ball.position.clone().sub(other.position);
+                        const dist = diff.length();
+                        if (dist < ballRadius * 2) {
+                            const normal = diff.normalize();
+                            const overlap = ballRadius * 2 - dist;
+                            ball.position.add(normal.clone().multiplyScalar(overlap / 2));
+                            other.position.sub(normal.clone().multiplyScalar(overlap / 2));
+                            
+                            // Exchange velocities (simplified elastic collision)
+                            const tempVel = vel.clone();
+                            vel.copy(other.userData.velocity);
+                            other.userData.velocity.copy(tempVel);
+                        }
+                    }
+                });
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        init();
+        animate();
+    </script>
+</body>
+</html>
